@@ -448,7 +448,8 @@ def get_openstack_driver(yaml):
 
 def cleanup_ceph_nodes(osp_cred, pattern=None, timeout=300):
     log.info("Destroying existing osp instances..")
-    user = os.getlogin()
+    #user = os.getlogin()
+    user="jenkins"
     name = pattern if pattern else "-{user}-".format(user=user)
     driver = get_openstack_driver(osp_cred)
     timeout = datetime.timedelta(seconds=timeout)
