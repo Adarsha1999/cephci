@@ -334,7 +334,8 @@ def create_ceph_nodes(
                 node_dict = ceph_cluster.get(node)
                 node_params = params.copy()
                 node_params["role"] = RolesContainer(node_dict.get("role"))
-                user = os.getlogin()
+                #user = os.getlogin()
+                user="jenkins"
                 node_params["id"] = node_dict.get("id") or node
                 node_params["location"] = node_dict.get("location")
                 node_params["node-name"] = generate_node_name(
