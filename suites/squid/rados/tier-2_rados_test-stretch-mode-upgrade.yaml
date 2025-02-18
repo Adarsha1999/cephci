@@ -4,6 +4,7 @@
 
 # This test case is Openstack only and cannot be run in Baremetal env due to test constrains.
 # Stretch mode deployment in BM is run by suite : suites/squid/rados/deploy-stretch-cluster-mode.yaml
+# RHOS-d run duration: 80 mins
 
 tests:
   - test:
@@ -22,7 +23,7 @@ tests:
         base_cmd_args:
           verbose: true
         args:
-          rhcs-version: 6.1
+          rhcs-version: 8.0
           release: rc
           mon-ip: node1
           orphan-initial-daemons: true

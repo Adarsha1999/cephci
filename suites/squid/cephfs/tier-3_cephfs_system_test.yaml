@@ -213,11 +213,29 @@ tests:
       module: cephfs_logs_util.py
       name: cephfs-enable-logs
       config:
-       ENABLE_LOGS : 1
-       daemon_list : ['mds','client','osd','mgr','mon']
-       daemon_dbg_level : {'mds':20,'client':20,'osd':10,'mgr':10,'mon':10}
+        ENABLE_LOGS : 1
+        daemon_list : ['mds','client','osd','mgr','mon']
+        daemon_dbg_level : {'mds':10,'client':10,'osd':5,'mgr':5,'mon':5}
   - test:
-      name: CephFS_System_test
+      abort-on-fail: false
+      desc: "Set size limit for log rotation"
+      name: size limit for log rotation
+      module: cephfs_logs_util.py
+      config:
+        LOG_ROTATE_SIZE : 1
+        log_size : '200M'
+  -
+    test:
+      abort-on-fail: false
+      desc: "Setup Crash configuration"
+      module: cephfs_crash_util.py
+      name: cephfs-crash-setup
+      config:
+        crash_setup : 1
+        daemon_list : ['mds','osd','mgr','mon']
+
+  - test:
+      name: CephFS_System_test_1
       module: test_parallel.py
       parallel:
         -
@@ -226,6 +244,44 @@ tests:
             desc: Run Client IO workflows
             module: cephfs_system.cephfs_systest_client_io.py
             name: "CephFS System Test Client IO"
+        -
+          test:
+            abort-on-fail: false
+            desc: Run MDS config updates
+            module: cephfs_system.cephfs_config_update.py
+            name: "CephFS MDS config update"
+        -
+          test:
+            abort-on-fail: false
+            desc: Run SV and Clone ops
+            module: cephfs_system.cephfs_systest_sv_clone_ops.py
+            name: "CephFS System Test SV Clone ops"
+        -
+          test:
+            abort-on-fail: false
+            desc: Run MDS ops
+            module: cephfs_system.cephfs_systest_mds_ops.py
+            name: "CephFS System Test MDS ops"
+        -
+          test:
+            abort-on-fail: true
+            desc: System monitor
+            module: cephfs_system.cephfs_systest_monitor.py
+            name: "CephFS System monitor"
+      desc: Running all System test workflows in parallel
+      abort-on-fail: false
+  - test:
+      name: CephFS_System_test_2
+      module: test_parallel.py
+      parallel:
+        -
+          test:
+            abort-on-fail: false
+            desc: Run Client IO workflow 7
+            module: cephfs_system.cephfs_systest_client_io.py
+            name: "CephFS System Test Client IO 7"
+            config:
+              test_name : io_test_workflow_7
         -
           test:
             abort-on-fail: true
@@ -237,11 +293,12 @@ tests:
   -
     test:
       abort-on-fail: false
-      desc: Run Client IO workflow 7
-      module: cephfs_system.cephfs_systest_client_io.py
-      name: "CephFS System Test Client IO 7"
+      desc: "Check for Crash"
+      module: cephfs_crash_util.py
+      name: cephfs-crash-check
       config:
-       test_name : io_test_workflow_7
+        crash_check : 1
+        daemon_list : ['mds','osd','mgr','mon']
   -
     test:
       abort-on-fail: false
@@ -249,5 +306,14 @@ tests:
       module: cephfs_logs_util.py
       name: cephfs-disable-logs
       config:
-       DISABLE_LOGS : 1
-       daemon_list : ['mds','client','osd','mgr','mon']
+        DISABLE_LOGS : 1
+        daemon_list : ['mds','client','osd','mgr','mon']
+  -
+    test:
+      name: Parse dbg logs for specific strings
+      module: cephfs_logs_util.py
+      config:
+        LOG_PARSER : 1
+        daemon : 'mds'
+        expect_list : ['issue_new_caps','get_allowed_caps','"sending MClientCaps"','client_caps\(revoke']
+        unexpect_list: ['Exception','assert']

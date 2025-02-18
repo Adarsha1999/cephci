@@ -14,6 +14,12 @@
 #     7. https://bugzilla.redhat.com/show_bug.cgi?id=2264052
 #     8. https://bugzilla.redhat.com/show_bug.cgi?id=2260306
 #     9. https://bugzilla.redhat.com/show_bug.cgi?id=2237038
+#     10.https://bugzilla.redhat.com/show_bug.cgi?id=1892173
+#     11.https://bugzilla.redhat.com/show_bug.cgi?id=2174954
+#     12.https://bugzilla.redhat.com/show_bug.cgi?id=2151501
+#     13.https://bugzilla.redhat.com/show_bug.cgi?id=2315595
+#     14.https://bugzilla.redhat.com/show_bug.cgi?id=2326179
+#     15.https://bugzilla.redhat.com/show_bug.cgi?id=2213766
 #===============================================================================================
 tests:
   - test:
@@ -151,9 +157,10 @@ tests:
           plugin: jerasure
           disable_pg_autoscale: true
         inconsistent_obj_count: 4
+        debug_enable: False
         delete_pool:
           - ecpool
-      comments: Active bug 2277111
+      comments:  Active bugs 2277111,2335727 and 2335762
 
   - test:
       name: Inconsistent objects in replicated pool functionality check
@@ -167,6 +174,7 @@ tests:
           pg_num: 1
           disable_pg_autoscale: true
         inconsistent_obj_count: 4
+        debug_enable: False
         delete_pool:
           - replicated_pool
       comments: Active bug 2316244
@@ -205,3 +213,18 @@ tests:
       module: test_v1client.py
       polarion-id: CEPH-83594645
       desc: Ensure client connection over v1 port does not crash
+
+  # Below test is currently failing, BZ raised #2315596
+  # will be un-commented once fix is available
+  # - test:
+  #     name: Mon connection scores testing
+  #     desc: Verification of mon connection scores in different scenarios
+  #     module: test_mon_connection_scores.py
+  #     polarion-id: CEPH-83602911
+  #     comments: Active bug 2151501
+
+  - test:
+      name: Verify config values via cephadm-ansible
+      module: test_cephadm_ansible.py
+      polarion-id: CEPH-83602686
+      desc: Ensure configuration values are accessible via cephadm-ansible module

@@ -7,6 +7,7 @@
 # Bugs:
 #     1. https://bugzilla.redhat.com/show_bug.cgi?id=2305677
 #===============================================================================================
+# RHOS-d run duration: 80 mins
 tests:
   - test:
       name: setup install pre-requisistes
@@ -142,4 +143,5 @@ tests:
           create: true
           pool_name: mgr_test_pool
           delete_pool: mgr_test_pool
+      comments: Active bug 2328605
       desc: Ceph mgr crashed after a mgr failover with the message mgr operator

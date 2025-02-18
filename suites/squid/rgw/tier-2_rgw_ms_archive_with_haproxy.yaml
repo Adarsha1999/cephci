@@ -1,7 +1,8 @@
-# This test to verify the archive zone with multisite where all the zones are configured behind a Load Balancer.
+# This test to verify the archive zone with multisite
+# where all the zones are configured behind a Load Balancer.
+# conf file:conf/squid/rgw/tier-2_rgw_ms_archive_with_haproxy_conf.yaml
 
 tests:
-
   # Cluster deployment stage
   - test:
       abort-on-fail: true
@@ -20,10 +21,7 @@ tests:
                   command: bootstrap
                   service: cephadm
                   args:
-                    registry-url: registry.redhat.io
                     mon-ip: node1
-                    orphan-initial-daemons: true
-                    skip-dashboard: true
               - config:
                   command: add_hosts
                   service: host
@@ -48,6 +46,21 @@ tests:
                   args:
                     all-available-devices: true
               - config:
+                  args:
+                    - "ceph osd erasure-code-profile set rgwec22_4 k=2 m=2"
+                    - "crush-failure-domain=host crush-device-class=hdd"
+                  command: shell
+              - config:
+                  args:
+                    - "ceph osd pool create primary.rgw.buckets.data 32 32"
+                    - "erasure rgwec22_4"
+                  command: shell
+              - config:
+                  args:
+                    - "ceph osd pool application enable"
+                    - "primary.rgw.buckets.data rgw"
+                  command: shell
+              - config:
                   command: apply
                   service: rgw
                   pos_args:
@@ -55,7 +68,7 @@ tests:
                   args:
                     placement:
                       nodes:
-                        - node5
+                        - node3
                         - node4
 
         ceph-sec:
@@ -66,10 +79,7 @@ tests:
                   command: bootstrap
                   service: cephadm
                   args:
-                    registry-url: registry.redhat.io
                     mon-ip: node1
-                    orphan-initial-daemons: true
-                    skip-dashboard: true
               - config:
                   command: add_hosts
                   service: host
@@ -94,6 +104,21 @@ tests:
                   args:
                     all-available-devices: true
               - config:
+                  args:
+                    - "ceph osd erasure-code-profile set rgwec22_4 k=2 m=2"
+                    - "crush-failure-domain=host crush-device-class=hdd"
+                  command: shell
+              - config:
+                  args:
+                    - "ceph osd pool create secondary.rgw.buckets.data 32 32"
+                    - "erasure rgwec22_4"
+                  command: shell
+              - config:
+                  args:
+                    - "ceph osd pool application enable"
+                    - "secondary.rgw.buckets.data rgw"
+                  command: shell
+              - config:
                   command: apply
                   service: rgw
                   pos_args:
@@ -101,7 +126,7 @@ tests:
                   args:
                     placement:
                       nodes:
-                        - node5
+                        - node3
                         - node4
 
         ceph-arc:
@@ -112,10 +137,7 @@ tests:
                   command: bootstrap
                   service: cephadm
                   args:
-                    registry-url: registry.redhat.io
                     mon-ip: node1
-                    orphan-initial-daemons: true
-                    skip-dashboard: true
               - config:
                   command: add_hosts
                   service: host
@@ -140,6 +162,21 @@ tests:
                   args:
                     all-available-devices: true
               - config:
+                  args:
+                    - "ceph osd erasure-code-profile set rgwec22_4 k=2 m=2"
+                    - "crush-failure-domain=host crush-device-class=hdd"
+                  command: shell
+              - config:
+                  args:
+                    - "ceph osd pool create archive.rgw.buckets.data 32 32"
+                    - "erasure rgwec22_4"
+                  command: shell
+              - config:
+                  args:
+                    - "ceph osd pool application enable"
+                    - "archive.rgw.buckets.data rgw"
+                  command: shell
+              - config:
                   command: apply
                   service: rgw
                   pos_args:
@@ -147,7 +184,7 @@ tests:
                   args:
                     placement:
                       nodes:
-                        - node5
+                        - node3
                         - node4
 
       desc: RHCS cluster deployment using cephadm.
@@ -166,7 +203,7 @@ tests:
           config:
             command: add
             id: client.1
-            node: node6
+            node: node4
             install_packages:
               - ceph-common
             copy_admin_keyring: true
@@ -174,7 +211,7 @@ tests:
           config:
             command: add
             id: client.1
-            node: node6
+            node: node4
             install_packages:
               - ceph-common
             copy_admin_keyring: true
@@ -182,7 +219,7 @@ tests:
           config:
             command: add
             id: client.1
-            node: node6
+            node: node4
             install_packages:
               - ceph-common
             copy_admin_keyring: true
@@ -200,8 +237,8 @@ tests:
             cephadm: true
             commands:
               - "radosgw-admin realm create --rgw-realm india --default"
-              - "radosgw-admin zonegroup create --rgw-realm india --rgw-zonegroup shared --endpoints http://{node_ip:node5}:80,http://{node_ip:node4}:80 --master --default"
-              - "radosgw-admin zone create --rgw-realm india --rgw-zonegroup shared --rgw-zone primary --endpoints http://{node_ip:node5}:80,http://{node_ip:node4}:80 --master --default"
+              - "radosgw-admin zonegroup create --rgw-realm india --rgw-zonegroup shared --endpoints http://{node_ip:node3}:80,http://{node_ip:node4}:80 --master --default"
+              - "radosgw-admin zone create --rgw-realm india --rgw-zonegroup shared --rgw-zone primary --endpoints http://{node_ip:node3}:80,http://{node_ip:node4}:80 --master --default"
               - "radosgw-admin period update --rgw-realm india --commit"
               - "radosgw-admin user create --uid=repuser --display_name='Replication user' --access-key a123 --secret s123 --rgw-realm india --system"
               - "radosgw-admin zone modify --rgw-realm india --rgw-zonegroup shared --rgw-zone primary --access-key a123 --secret s123"
@@ -210,47 +247,47 @@ tests:
               - "ceph config set client.rgw.shared.pri rgw_zonegroup shared"
               - "ceph config set client.rgw.shared.pri rgw_zone primary"
               - "ceph orch restart rgw.shared.pri"
-              - "radosgw-admin zonegroup modify --rgw-realm india --rgw-zonegroup shared --endpoints http://{node_ip:node6}:5000"
-              - "radosgw-admin zone modify --rgw-realm india --rgw-zonegroup shared --endpoints http://{node_ip:node6}:5000"
+              - "radosgw-admin zonegroup modify --rgw-realm india --rgw-zonegroup shared --endpoints http://{node_ip:node4}:5000"
+              - "radosgw-admin zone modify --rgw-realm india --rgw-zonegroup shared --endpoints http://{node_ip:node4}:5000"
               - "radosgw-admin period update --rgw-realm india --commit"
       desc: Setting up primary site in a multisite.
       module: exec.py
       name: setup multisite
       polarion-id: CEPH-10362
 
-# configuring HAproxy on the client node 'node6' and port '5000'
+# configuring HAproxy on the client node 'node4' and port '5000'
   - test:
       abort-on-fail: true
       clusters:
         ceph-pri:
           config:
             haproxy_clients:
-              - node6
+              - node4
             rgw_endpoints:
               - node4:80
-              - node5:80
+              - node3:80
 
         ceph-sec:
           config:
             haproxy_clients:
-              - node6
+              - node4
             rgw_endpoints:
               - node4:80
-              - node5:80
+              - node3:80
         ceph-arc:
           config:
             haproxy_clients:
-              - node6
+              - node4
             rgw_endpoints:
               - node4:80
-              - node5:80
+              - node3:80
 
       desc: "Configure HAproxy"
       module: haproxy.py
       name: "Configure HAproxy"
 
 
-#configuring the secondary zone and archive zone from the Primary's Haproxy.
+# configuring the secondary zone and archive zone from the Primary's Haproxy.
 
   - test:
       abort-on-fail: true
@@ -265,15 +302,15 @@ tests:
             cephadm: true
             commands:
               - "sleep 120"
-              - "radosgw-admin realm pull --rgw-realm india --url http://{node_ip:ceph-pri#node6}:5000 --access-key a123 --secret s123 --default"
-              - "radosgw-admin period pull --url http://{node_ip:ceph-pri#node6}:5000 --access-key a123 --secret s123"
-              - "radosgw-admin zone create --rgw-realm india --rgw-zonegroup shared --rgw-zone secondary --endpoints http://{node_ip:node5}:80,http://{node_ip:node4}:80 --access-key a123 --secret s123"
+              - "radosgw-admin realm pull --rgw-realm india --url http://{node_ip:ceph-pri#node4}:5000 --access-key a123 --secret s123 --default"
+              - "radosgw-admin period pull --url http://{node_ip:ceph-pri#node4}:5000 --access-key a123 --secret s123"
+              - "radosgw-admin zone create --rgw-realm india --rgw-zonegroup shared --rgw-zone secondary --endpoints http://{node_ip:node3}:80,http://{node_ip:node4}:80 --access-key a123 --secret s123"
               - "radosgw-admin period update --rgw-realm india --commit"
               - "ceph config set client.rgw.shared.sec rgw_realm india"
               - "ceph config set client.rgw.shared.sec rgw_zonegroup shared"
               - "ceph config set client.rgw.shared.sec rgw_zone secondary"
               - "ceph orch restart rgw.shared.sec"
-              - "radosgw-admin zone modify --rgw-realm india --rgw-zonegroup shared --rgw-zone secondary --endpoints http://{node_ip:node6}:5000"
+              - "radosgw-admin zone modify --rgw-realm india --rgw-zonegroup shared --rgw-zone secondary --endpoints http://{node_ip:node4}:5000"
               - "radosgw-admin period update --rgw-realm india --commit"
 
         ceph-arc:
@@ -281,24 +318,23 @@ tests:
             cephadm: true
             commands:
               - "sleep 120"
-              - "radosgw-admin realm pull --rgw-realm india --url http://{node_ip:ceph-pri#node6}:5000 --access-key a123 --secret s123 --default"
-              - "radosgw-admin period pull --url http://{node_ip:ceph-pri#node6}:5000 --access-key a123 --secret s123"
-              - "radosgw-admin zone create --rgw-realm india --rgw-zonegroup shared --rgw-zone archive --endpoints http://{node_ip:node5}:80,http://{node_ip:node4}:80 --access-key a123 --secret s123 --tier-type=archive"
+              - "radosgw-admin realm pull --rgw-realm india --url http://{node_ip:ceph-pri#node4}:5000 --access-key a123 --secret s123 --default"
+              - "radosgw-admin period pull --url http://{node_ip:ceph-pri#node4}:5000 --access-key a123 --secret s123"
+              - "radosgw-admin zone create --rgw-realm india --rgw-zonegroup shared --rgw-zone archive --endpoints http://{node_ip:node3}:80,http://{node_ip:node4}:80 --access-key a123 --secret s123 --tier-type=archive"
+              - "radosgw-admin zone modify --rgw-zone archive --sync_from primary --sync_from_all false"
               - "radosgw-admin period update --rgw-realm india --commit"
               - "ceph config set client.rgw.shared.arc rgw_realm india"
               - "ceph config set client.rgw.shared.arc rgw_zonegroup shared"
               - "ceph config set client.rgw.shared.arc rgw_zone archive"
               - "ceph orch restart rgw.shared.arc"
-              - "radosgw-admin zone modify --rgw-realm india --rgw-zonegroup shared --rgw-zone archive --endpoints http://{node_ip:node6}:5000"
+              - "radosgw-admin zone modify --rgw-realm india --rgw-zonegroup shared --rgw-zone archive --endpoints http://{node_ip:node4}:5000"
               - "radosgw-admin period update --rgw-realm india --commit"
 
       desc: Setting up RGW multisite replication environment with archive zone
       module: exec.py
       name: setup multisite
-      polarion-id: CEPH-83574575
+      polarion-id: CEPH-83574575  # CEPH-83581371
 
-
-### create a non-tenanted user for secondary site
 
   - test:
       clusters:
@@ -306,12 +342,13 @@ tests:
           config:
             set-env: true
             script-name: user_create.py
-            config-file-name: non_tenanted_user.yaml
+            config-file-name: tenanted_user.yaml
             copy-user-info-to-site: ceph-sec
-      desc: create non-tenanted user
-      polarion-id: CEPH-83575199
+      desc: create tenanted user
       module: sanity_rgw_multisite.py
-      name: create non-tenanted user
+      name: create tenanted user
+      polarion-id: CEPH-83575199
+
 
 ### create a tenanted user for archive site
 
@@ -393,139 +430,6 @@ tests:
       module: exec.py
       name: set sse-s3 vault configs on multisite
 
-#Performing IOs via the HAproxy node
-
-  - test:
-      clusters:
-        ceph-sec:
-          config:
-            set-env: true
-            script-name: test_Mbuckets_with_Nobjects.py
-            config-file-name: test_Mbuckets_with_Nobjects_compression_haproxy.yaml
-            run-on-haproxy: true
-            monitor-consistency-bucket-stats: true
-      desc: test M buckets compression on haproxy node
-      polarion-id: CEPH-83575199
-      module: sanity_rgw_multisite.py
-      name: test M buckets compression on haproxy node
-
-# creating a test bucket on the primary site
-  - test:
-      clusters:
-        ceph-pri:
-          config:
-            set-env: true
-            script-name: test_data_sync_init_remote.py
-            config-file-name: test_data_sync_init_remote_zone.yaml
-            run-on-haproxy: true
-            timeout: 5500
-      desc: Test data sync init feature for multiple buckets resharded to 1999 shards
-      module: sanity_rgw_multisite.py
-      name: Test data sync init feature for multiple buckets resharded to 1999 shards
-      polarion-id: CEPH-83575300 #CEPH-83575303
-
-  - test:
-      clusters:
-        ceph-pri:
-          config:
-            set-env: true
-            script-name: test_Mbuckets_with_Nobjects.py
-            config-file-name: test_Mbuckets_haproxy.yaml
-            run-on-haproxy: true
-      desc: test M buckets on haproxy node
-      module: sanity_rgw_multisite.py
-      name: test M buckets on haproxy node
-      polarion-id: CEPH-83575435
-
-  - test:
-      clusters:
-        ceph-pri:
-          config:
-            set-env: true
-            script-name: test_bucket_lifecycle_object_expiration_transition.py
-            config-file-name: test_lc_rule_prefix_non_current_days_haproxy.yaml
-            run-on-haproxy: true
-      desc: test LC from primary to secondary
-      module: sanity_rgw_multisite.py
-      name: test LC from primary to secondary
-      polarion-id: CEPH-11194
-  - test:
-      abort-on-fail: true
-      clusters:
-        ceph-sec:
-          config:
-            cephadm: true
-            commands:
-              - "ceph config set client.rgw.shared.sec rgw_sync_lease_period 10"
-              - "ceph orch restart rgw.shared.sec"
-        ceph-pri:
-          config:
-            cephadm: true
-            commands:
-              - "ceph config set client.rgw.shared.pri rgw_sync_lease_period 10"
-              - "ceph orch restart rgw.shared.pri"
-        ceph-arc:
-          config:
-            cephadm: true
-            commands:
-              - "ceph config set client.rgw.shared.arc rgw_sync_lease_period 10"
-              - "ceph orch restart rgw.shared.arc"
-      desc: Setting rgw_sync_lease_period to 100 on multisite archive
-      module: exec.py
-      name: Setting rgw_sync_lease_period to 100 on multisite archive
-
-  - test:
-      clusters:
-        ceph-pri:
-          config:
-            script-name: test_Mbuckets_with_Nobjects.py
-            config-file-name: test_Mbuckets_with_Nobjects_0_shards_sync_test_haproxy.yaml
-            run-on-haproxy: true
-            monitor-consistency-bucket-stats: true
-            timeout: 5000
-      desc: test sync on bucket with 0 shards
-      module: sanity_rgw_multisite.py
-      name: test sync on bucket with 0 shards
-      polarion-id: CEPH-83575573
-  - test:
-      clusters:
-        ceph-pri:
-          config:
-            script-name: test_bucket_lifecycle_object_expiration_transition.py
-            config-file-name: test_lc_transition_with_prefix_rule_haproxy.yaml
-            run-on-haproxy: true
-            stat-all-buckets-at-archive: true
-      desc: test LC transition on multisite, and bucket stats at archive
-      module: sanity_rgw_multisite.py
-      name: test LC transition on multisite, and bucket stats at archive
-      polarion-id: CEPH-83573372
-
-  - test:
-      clusters:
-        ceph-pri:
-          config:
-            script-name: test_bucket_lifecycle_object_expiration_transition.py
-            config-file-name: test_lc_transition_with_obj_acl_haproxy.yaml
-            run-on-haproxy: true
-      desc: test LC transition on multisite with object acl set
-      module: sanity_rgw_multisite.py
-      name: test LC transition on multisite with object acl set
-      polarion-id: CEPH-83574048
-# test the workaround to sync only from one active zone
-  - test:
-      clusters:
-        ceph-arc:
-          config:
-            cephadm: true
-            commands:
-              - "radosgw-admin zone modify --rgw-zone archive --sync_from primary --sync_from_all false"
-              - "radosgw-admin period update --commit"
-              - "radosgw-admin period get"
-      desc: test the workaround to sync only from one active zone
-      module: exec.py
-      name: test the workaround to sync only from one active zone
-      polarian-id: CEPH-83581371
-
   - test:
       clusters:
         ceph-pri:
@@ -551,7 +455,7 @@ tests:
       module: sanity_rgw_multisite.py
       name: test M buckets multipart uploads on haproxy node
       polarion-id: CEPH-83575433
-      comments: bug in 8.0, 2325018, not fixed
+      comments: Known issue in 8.0,Bug 2325018
   - test:
       clusters:
         ceph-arc:
@@ -576,19 +480,20 @@ tests:
       module: sanity_rgw_multisite.py
       name: Upload 5000 objects via s3cmd to test full sync at archive
 
+
   - test:
       clusters:
-        ceph-arc:
+        ceph-pri:
           config:
-            cephadm: true
-            commands:
-              - "radosgw-admin zone modify --rgw-zone archive --sync_from_all true"
-              - "radosgw-admin period update --commit"
-              - "radosgw-admin period get"
-      desc: Sync to the archive zone from all active sites
-      module: exec.py
-      name: Sync to the archive zone from all active sites
-      polarian-id: CEPH-83581371
+            script-name: test_bucket_lifecycle_object_expiration_transition.py
+            config-file-name: test_lc_transition_with_prefix_rule_haproxy.yaml
+            run-on-haproxy: true
+            stat-all-buckets-at-archive: true
+      desc: test LC transition on multisite, and bucket stats at archive
+      module: sanity_rgw_multisite.py
+      name: test LC transition on multisite, and bucket stats at archive
+      polarion-id: CEPH-83573372
+
   - test:
       clusters:
         ceph-pri:
@@ -612,86 +517,3 @@ tests:
       module: sanity_rgw_multisite.py
       name: test versioning suspend on archive
       polarion-id: CEPH-83575578
-  - test:
-      clusters:
-        ceph-pri:
-          config:
-            extra-pkgs:
-              - jq
-            script-name: test_rgw_restore_index_tool.py
-            config-file-name: test_rgw_restore_index_versioned_buckets.yaml
-            run-on-haproxy: true
-            monitor-consistency-bucket-stats: true
-            timeout: 7200
-      desc: test rgw restore index tool on versioned bucket
-      polarion-id: CEPH-83575473
-      module: sanity_rgw_multisite.py
-      name: test rgw restore index tool on versioned bucket
-  - test:
-      clusters:
-        ceph-pri:
-          config:
-            cephadm: true
-            commands:
-              - "ceph config set client.rgw.shared.pri rgw_crypt_default_encryption_key 4YSmvJtBv0aZ7geVgAsdpRnLBEwWSWlMIGnRS8a9TSA="
-              - "radosgw-admin zone placement modify --rgw-zone primary --placement-id default-placement  --compression zlib"
-              - "radosgw-admin period update --commit"
-              - "radosgw-admin period get"
-              - "ceph orch restart rgw.shared.pri"
-        ceph-sec:
-          config:
-            cephadm: true
-            commands:
-              - "ceph config set client.rgw.shared.sec rgw_crypt_default_encryption_key 4YSmvJtBv0aZ7geVgAsdpRnLBEwWSWlMIGnRS8a9TSA="
-              - "radosgw-admin zone placement modify --rgw-zone secondary --placement-id default-placement  --compression zlib"
-              - "radosgw-admin period update --commit"
-              - "radosgw-admin period get"
-              - "ceph orch restart rgw.shared.sec"
-        ceph-arc:
-          config:
-            cephadm: true
-            commands:
-              - "ceph config set client.rgw.shared.arc rgw_crypt_default_encryption_key 4YSmvJtBv0aZ7geVgAsdpRnLBEwWSWlMIGnRS8a9TSA="
-              - "radosgw-admin zone placement modify --rgw-zone archive --placement-id default-placement  --compression zlib"
-              - "radosgw-admin period update --commit"
-              - "radosgw-admin period get"
-              - "ceph orch restart rgw.shared.arc"
-      desc: enabled default encryption and zlib compression
-      module: exec.py
-      name: enabled default encryption and zlib compression
-
-  - test:
-      clusters:
-        ceph-pri:
-          config:
-            script-name: test_s3_copy_encryption.py
-            config-file-name: test_server_side_copy_object_via_encryption.yaml
-            run-on-haproxy: true
-      desc: test server_side_copy_object_via_encryption
-      polarion-id: CEPH-83575711
-      module: sanity_rgw_multisite.py
-      name: test server_side_copy_object_via_encryption
-
-  - test:
-      clusters:
-        ceph-pri:
-          config:
-            script-name: test_encrypted_bucket_chown.py
-            config-file-name: test_encrypted_bucket_chown.yaml
-            run-on-haproxy: true
-      desc: Change bucket ownership to a different user when encryption is enabled
-      polarion-id: CEPH-83574621
-      module: sanity_rgw_multisite.py
-      name: Change bucket ownership to a different user when encryption is enabled
-
-  - test:
-      clusters:
-        ceph-pri:
-          config:
-            script-name: test_encrypted_bucket_chown.py
-            config-file-name: test_chown_before_encrypt.yaml
-            run-on-haproxy: true
-      desc: Change bucket ownership to a different user and then encryption is enabled
-      polarion-id: CEPH-83574618
-      module: sanity_rgw_multisite.py
-      name: Change bucket ownership to a different user and then encryption is enabled

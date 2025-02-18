@@ -252,12 +252,12 @@ tests:
 
   - test:
       clusters:
-        ceph-sec:
+        ceph-pri:
           config:
             config-file-name: test_Mbuckets_with_Nobjects.yaml
             script-name: test_Mbuckets_with_Nobjects.py
-            verify-io-on-site: [ "ceph-pri" ]
-      desc: Execute M buckets with N objects on secondary cluster
+            verify-io-on-site: [ "ceph-sec" ]
+      desc: Execute M buckets with N objects on primary cluster
       polarion-id: CEPH-83575435
       module: sanity_rgw_multisite.py
       name: m buckets with n objects
@@ -272,3 +272,13 @@ tests:
           config:
             script-name: test_bilog_trimming.py
             config-file-name: test_bilog_trimming.yaml
+
+  - test:
+      name: scrub + bilog trimming with OSD down
+      desc: test radosgw bilog trimming and deep-scrub with OSDs down
+      clusters:
+        ceph-pri:
+          config:
+            pool_name: rgw_bilog
+      polarion-id: CEPH-83575437
+      module: test_bilog_trim.py

@@ -60,7 +60,7 @@ def run(ceph_cluster, **kw):
         )
         cluster_id = f"test-nfs_{rand}"
         path = "/"
-        export_id = "1"
+
         fs_name = "cephfs" if not erasure else "cephfs-ec"
         fs_details = fs_util.get_fs_info(client1, fs_name)
 
@@ -70,7 +70,7 @@ def run(ceph_cluster, **kw):
         user_id = (
             f"nfs.{cluster_id}.{fs_name}"
             if int(build.split(".")[0]) == 7
-            else f"nfs.{cluster_id}.{export_id}"
+            else f"nfs.{cluster_id}"
         )
 
         passed = []
@@ -106,7 +106,8 @@ def run(ceph_cluster, **kw):
         if result["fsal"]["name"] != "CEPH":
             do_not_match.append("[fsal][name]")
 
-        elif result["fsal"]["user_id"] != user_id:
+        # In 8.0 the user_id is getting appended with 8 character sample : nfs.test-nfs_32igz.cephfs.540bf01f
+        elif not result["fsal"]["user_id"].startswith(user_id):
             do_not_match.append("[fsid][user_id]")
 
         elif result["fsal"]["fs_name"] != fs_name:
