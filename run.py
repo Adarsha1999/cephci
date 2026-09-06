@@ -311,6 +311,7 @@ def create_nodes(
             cephuser_password = "cephuser"
             ssh_username = "cephuser"
             root_username = None  # None = use default "root"
+            ssh_ip = None
 
             if cloud_type == "openstack":
                 private_ip = node.get_private_ip()
@@ -338,7 +339,8 @@ def create_nodes(
             elif cloud_type == "ocpvirt":
                 ocp_cfg = resolve_ocpvirt_credentials(osp_cred, custom_config)
                 private_key_path = ocp_cfg.get("private_key_path", "")
-                private_ip = node.ip_address
+                ssh_ip = getattr(node, "ssh_ip", None) or node.ip_address
+                private_ip = ssh_ip
                 look_for_key = bool(private_key_path)
                 ceph_nodename = node.hostname
             elif cloud_type == "onecloud":
@@ -394,6 +396,7 @@ def create_nodes(
                     ipv4_address=node.ip_address,
                     ipv4_subnet=node.subnet,
                     private_ip=private_ip,
+                    ssh_ip=ssh_ip,
                     hostname=node.hostname,
                     ceph_vmnode=node,
                     ceph_nodename=ceph_nodename,

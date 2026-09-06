@@ -9,7 +9,12 @@ from compute.openshift import (
     apply_ocpvirt_vm_profile,
     build_virtualmachine_cr,
     datavolume_names_from_vm,
+    guest_udn_nmcli_script,
     load_ocpvirt_namespace_config,
+    parse_ovn_secondary_cidr,
+    ssh_guest_not_ready,
+    pick_vmi_ssh_ip,
+    pick_vmi_udn_ip,
     process_ocpvirt_custom_config,
     resolve_ocpvirt_credentials,
     resolve_ocpvirt_image_name,
@@ -210,6 +215,90 @@ def test_build_virtualmachine_cr_requires_precreated_volume_names():
         )
 
 
+def test_build_virtualmachine_cr_secondary_udn():
+    vm = build_virtualmachine_cr(
+        node_name="ceph-test-node",
+        namespace="test-ns",
+        image_name="https://example.com/disk.qcow2",
+        storage_class="nfs",
+        network="default",
+        root_disk_size="80Gi",
+        instancetype_name="o1.large",
+        precreated_volume_names=[],
+        secondary_network="ceph-public",
+    )
+    spec = vm["spec"]["template"]["spec"]
+    assert spec["domain"]["devices"]["interfaces"] == [
+        {"name": "default", "masquerade": {}},
+        {"name": "ceph-public", "binding": {"name": "l2bridge"}},
+    ]
+    assert spec["networks"] == [
+        {"name": "default", "pod": {}},
+        {"name": "ceph-public", "multus": {"networkName": "ceph-public"}},
+    ]
+
+
+def test_pick_vmi_ssh_ip_skips_udn():
+    ip = pick_vmi_ssh_ip(
+        [
+            {"name": "ceph-public", "ipAddress": "192.168.0.10"},
+            {"name": "default", "ipAddress": "172.19.8.20"},
+        ]
+    )
+    assert ip == "172.19.8.20"
+
+
+def test_pick_vmi_udn_ip_prefers_guest_udn():
+    ip = pick_vmi_udn_ip(
+        [
+            {"name": "default", "ipAddress": "172.19.83.39"},
+            {
+                "name": "ceph-public",
+                "ipAddress": "192.168.0.1",
+                "ipAddresses": ["192.168.0.1", "fe80::2d:d0ff:fe40:d876"],
+            },
+        ]
+    )
+    assert ip == "192.168.0.1"
+
+
+def test_pick_vmi_udn_ip_none_without_guest_ipv4():
+    ip = pick_vmi_udn_ip(
+        [
+            {"name": "default", "ipAddress": "172.19.83.39"},
+            {
+                "name": "ceph-public",
+                "ipAddress": "fe80::2d:d0ff:fe40:d876",
+                "ipAddresses": ["fe80::2d:d0ff:fe40:d876"],
+            },
+        ]
+    )
+    assert ip is None
+
+
+def test_parse_ovn_secondary_cidr_from_pod_annotation():
+    annotation = (
+        '{"ceph-teuthology--runtime-int/ceph-public":{"ip_addresses":'
+        '["192.168.0.1/20"],"mac_address":"02:2d:d0:40:d8:76",'
+        '"ip_address":"192.168.0.1/20","role":"secondary"},'
+        '"default":{"ip_address":"172.19.83.39/20","role":"primary"}}'
+    )
+    assert (
+        parse_ovn_secondary_cidr(
+            annotation, "ceph-teuthology--runtime-int", "ceph-public"
+        )
+        == "192.168.0.1/20"
+    )
+
+
+def test_guest_udn_nmcli_script_contains_ovn_cidr():
+    script = guest_udn_nmcli_script("02:2D:D0:40:D8:76", "192.168.0.1/20")
+    assert "MAC=02:2d:d0:40:d8:76" in script
+    assert "CIDR=192.168.0.1/20" in script
+    assert "ipv4.never-default yes" in script
+    assert "con-name ceph-public" in script
+
+
 def test_datavolume_names_from_vm_includes_root_and_precreated():
     vm = build_virtualmachine_cr(
         node_name="ceph-test-node",
@@ -225,3 +314,13 @@ def test_datavolume_names_from_vm_includes_root_and_precreated():
     assert "ceph-test-node-root" in names
     assert "ceph-test-node-vol-0" in names
     assert "ceph-test-node-vol-1" in names
+
+
+def test_ssh_guest_not_ready_retries_overlay_gaps():
+    assert ssh_guest_not_ready(
+        "ssh: connect to host 172.18.79.156 port 22: No route to host"
+    )
+    assert ssh_guest_not_ready("Connection refused")
+    assert ssh_guest_not_ready("Connection timed out")
+    assert not ssh_guest_not_ready("Permission denied (publickey)")
+    assert not ssh_guest_not_ready("guest UDN nmcli failed: no guest NIC")

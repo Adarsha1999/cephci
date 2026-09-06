@@ -1,0 +1,22 @@
+---
+# OCP Virtualization namespace template for RDU3 ceph-teuthology tenant.
+# Use with: --custom-config ocpvirt_namespace=rdu3_ceph_teuthology
+#
+# Auth (token, certificate_authority_data, private_key_path) stays in --osp-cred.
+# Default masquerade stays for SSH / RHSM. secondary_network is the Layer2 UDN.
+# Do not set network: bridge-504 in osp-cred; that NAD is not in this namespace.
+# osp-cred keys overwrite this file on merge.
+
+server: https://10.5.229.33:6443
+namespace: ceph-teuthology--runtime-int
+storage_class: rh-restricted-nfs
+network: default
+secondary_network: ceph-public
+subnet: 192.168.0.0/20
+root_disk_size: 80Gi
+access_modes:
+  - ReadWriteMany
+
+datasources:
+  rhel9: datasource://openshift-virtualization-os-images/rhel9
+  rhel10: datasource://openshift-virtualization-os-images/rhel10

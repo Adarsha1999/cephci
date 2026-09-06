@@ -1292,7 +1292,8 @@ def setup_vm_node_ocpvirt(node, ceph_nodes, **params):
     except RETRY_EXCEPTIONS as retry_except:
         log.warning(retry_except, exc_info=True)
         if vm is not None:
-            vm.delete()
+            # Keep batch-created blank disks; retry create() reattaches them.
+            vm.delete(keep_precreated_volumes=True)
         else:
             cleanup_precreated_datavolumes(params["ocp-cred"], precreated_volume_names)
         raise

@@ -2,8 +2,10 @@
 
 import base64
 import ipaddress
+import json
 import os
 import re
+import subprocess
 import tempfile
 from copy import deepcopy
 from pathlib import Path
@@ -174,6 +176,201 @@ def _cloudinit_secret_name(vm_name: str) -> str:
     return f"{vm_name}-cloudinit"[:63].rstrip("-")
 
 
+DEFAULT_UDN_SUBNET = ipaddress.ip_network("192.168.0.0/20")
+OVERLAY_SUBNET = ipaddress.ip_network("172.16.0.0/12")
+
+
+def _iface_ip_candidates(iface: dict) -> List[str]:
+    """Unique IP strings from a VMI status.interfaces entry."""
+    seen = set()
+    out: List[str] = []
+    for ip in [iface.get("ipAddress"), *(iface.get("ipAddresses") or [])]:
+        if ip and ip not in seen:
+            seen.add(ip)
+            out.append(ip)
+    return out
+
+
+def udn_network(cred: Optional[dict] = None) -> ipaddress.IPv4Network:
+    """Layer2 UDN CIDR from ocpvirt creds, else ``192.168.0.0/20``."""
+    raw = None
+    if cred:
+        raw = cred.get("subnet") or cred.get("network_cidr")
+    if raw:
+        try:
+            net = ipaddress.ip_network(str(raw), strict=False)
+            if isinstance(net, ipaddress.IPv4Network):
+                return net
+        except ValueError:
+            pass
+    return DEFAULT_UDN_SUBNET
+
+
+def parse_ovn_secondary_cidr(
+    annotation: str,
+    namespace: str,
+    network_name: str,
+) -> Optional[str]:
+    """Return ``ip/prefix`` for the secondary UDN from k8s.ovn.org/pod-networks."""
+    if not annotation or not namespace or not network_name:
+        return None
+    try:
+        data = json.loads(annotation)
+    except (TypeError, json.JSONDecodeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    entry = data.get(f"{namespace}/{network_name}")
+    if not isinstance(entry, dict):
+        entry = None
+        for value in data.values():
+            if isinstance(value, dict) and str(value.get("role", "")).lower() == "secondary":
+                entry = value
+                break
+    if not entry:
+        return None
+    cidr = entry.get("ip_address")
+    if not cidr:
+        addrs = entry.get("ip_addresses") or []
+        cidr = addrs[0] if addrs else None
+    if not cidr:
+        return None
+    text = str(cidr)
+    host = text.split("/", 1)[0]
+    if ":" in host:
+        return None
+    try:
+        ipaddress.ip_interface(text)
+    except ValueError:
+        return None
+    return text
+
+
+def guest_udn_nmcli_script(mac: str, cidr: str) -> str:
+    """Bash applied over SSH: put the OVN-assigned CIDR on the NIC with ``mac``."""
+    mac = mac.strip().lower()
+    if not re.fullmatch(r"([0-9a-f]{2}:){5}[0-9a-f]{2}", mac):
+        raise NodeError(f"invalid UDN MAC {mac!r}")
+    iface = ipaddress.ip_interface(cidr)
+    if not isinstance(iface, ipaddress.IPv4Interface):
+        raise NodeError(f"UDN CIDR must be IPv4: {cidr}")
+    cidr = str(iface)
+    addr = str(iface.ip)
+    return f"""set -euo pipefail
+MAC={mac}
+CIDR={cidr}
+ADDR={addr}
+IFACE=""
+for d in /sys/class/net/*; do
+  n=$(basename "$d")
+  [ "$n" = lo ] && continue
+  a=$(cat "$d/address" 2>/dev/null || true)
+  if [ "$(echo "$a" | tr 'A-F' 'a-f')" = "$MAC" ]; then
+    IFACE=$n
+    break
+  fi
+done
+if [ -z "$IFACE" ]; then
+  echo "no guest NIC with MAC $MAC" >&2
+  ip link >&2
+  exit 1
+fi
+if ip -4 -o addr show dev "$IFACE" | grep -q "inet $ADDR/"; then
+  echo "UDN $ADDR already on $IFACE"
+  exit 0
+fi
+nmcli con delete ceph-public >/dev/null 2>&1 || true
+nmcli con add type ethernet ifname "$IFACE" con-name ceph-public \\
+  ipv4.method manual ipv4.addresses "$CIDR" ipv4.never-default yes \\
+  connection.autoconnect yes
+nmcli con up ceph-public
+ip -4 addr show dev "$IFACE"
+"""
+
+
+def ssh_guest_not_ready(err: str) -> bool:
+    """True when overlay SSH is not up yet (VMI IP can precede routing/sshd)."""
+    err_l = (err or "").lower()
+    return any(
+        needle in err_l
+        for needle in (
+            "connection refused",
+            "timed out",
+            "timeout",
+            "no route to host",
+            "network is unreachable",
+            "host is down",
+            "connection reset",
+            "connection closed",
+            "no matching cipher",
+            "kex_exchange_identification",
+        )
+    )
+
+
+def pick_vmi_udn_ip(
+    interfaces: List[dict],
+    udn: Optional[ipaddress.IPv4Network] = None,
+) -> Optional[str]:
+    """Pick the guest UDN IPv4 used for Ceph (``--mon-ip``, public_network).
+
+    Secondary UDN + l2bridge puts this address on the guest NIC, not on the
+    default masquerade overlay. Link-local IPv6 is ignored.
+    """
+    net = udn or DEFAULT_UDN_SUBNET
+    for iface in interfaces or []:
+        for ip in _iface_ip_candidates(iface):
+            if ":" in ip:
+                continue
+            try:
+                addr = ipaddress.ip_address(ip)
+            except ValueError:
+                continue
+            if addr in net:
+                return ip
+    return None
+
+
+def pick_vmi_ssh_ip(
+    interfaces: List[dict],
+    udn: Optional[ipaddress.IPv4Network] = None,
+) -> Optional[str]:
+    """Pick the VMI address the Jenkins agent can SSH to.
+
+    Prefer the default/pod overlay IPv4. Skip the UDN subnet so a secondary
+    ``ceph-public`` NIC is not used for SSH.
+    """
+    udn = udn or DEFAULT_UDN_SUBNET
+    default_ipv4s: List[str] = []
+    overlay_ipv4s: List[str] = []
+    other_ipv4s: List[str] = []
+    ipv6s: List[str] = []
+    for iface in interfaces or []:
+        name = iface.get("name") or ""
+        for ip in _iface_ip_candidates(iface):
+            if ":" in ip:
+                ipv6s.append(ip)
+                continue
+            try:
+                addr = ipaddress.ip_address(ip)
+            except ValueError:
+                continue
+            if name == "default" or addr in OVERLAY_SUBNET:
+                if name == "default":
+                    default_ipv4s.append(ip)
+                overlay_ipv4s.append(ip)
+            elif addr in udn:
+                continue
+            else:
+                other_ipv4s.append(ip)
+    for group in (default_ipv4s, overlay_ipv4s, other_ipv4s):
+        if group:
+            return group[0]
+    if ipv6s:
+        return ipv6s[0]
+    return None
+
+
 def build_virtualmachine_cr(
     node_name: str,
     namespace: str,
@@ -186,6 +383,7 @@ def build_virtualmachine_cr(
     access_modes: Optional[List[str]] = None,
     cloudinit_secret_name: Optional[str] = None,
     precreated_volume_names: Optional[List[str]] = None,
+    secondary_network: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Build a simple KubeVirt VirtualMachine CR with embedded DataVolume templates.
@@ -251,6 +449,17 @@ def build_virtualmachine_cr(
     else:
         interfaces = [{"name": "default", "bridge": {}}]
         networks = [{"name": "default", "multus": {"networkName": network}}]
+
+    if secondary_network and secondary_network not in (network, "default"):
+        interfaces.append(
+            {"name": secondary_network, "binding": {"name": "l2bridge"}}
+        )
+        networks.append(
+            {
+                "name": secondary_network,
+                "multus": {"networkName": secondary_network},
+            }
+        )
 
     domain: Dict[str, Any] = {
         "devices": {
@@ -1001,17 +1210,39 @@ class CephVMNodeOCP:
         """Restore state and recreate API clients."""
         self.__dict__.update(state)
         self.custom_api, self.core_api = get_k8s_clients(self._ocp_cred)
+        # Reuse pickles may have cached the overlay SSH IP as ip_address.
+        self._cached_ip = None
+        self._cached_ssh_ip = None
+
+    @property
+    def ssh_ip(self) -> str:
+        """Overlay IPv4 the Jenkins agent can SSH to (not the UDN)."""
+        cached = getattr(self, "_cached_ssh_ip", None)
+        if cached:
+            return cached
+        ip = (
+            pick_vmi_ssh_ip(
+                self._vmi_interfaces(), udn=udn_network(self._ocp_cred)
+            )
+            or ""
+        )
+        if ip:
+            self._cached_ssh_ip = ip
+        return ip
 
     @property
     def ip_address(self) -> str:
-        """Return the primary IP address of the VMI."""
+        """Ceph bind address: UDN IPv4 when present, else the SSH overlay IP."""
         cached = getattr(self, "_cached_ip", None)
         if cached:
             return cached
-        ip = self._get_vmi_ip() or ""
-        if ip:
-            self._cached_ip = ip
-        return ip
+        udn_ip = pick_vmi_udn_ip(
+            self._vmi_interfaces(), udn=udn_network(self._ocp_cred)
+        )
+        if udn_ip:
+            self._cached_ip = udn_ip
+            return udn_ip
+        return self.ssh_ip
 
     @property
     def hostname(self) -> str:
@@ -1131,6 +1362,7 @@ class CephVMNodeOCP:
         cred = self._ocp_cred
         storage_class = storage_class or cred.get("storage_class")
         network = network if network is not None else cred.get("network", "default")
+        secondary_network = cred.get("secondary_network")
         root_disk_size = cred.get("root_disk_size") or DEFAULT_OCPVIRT_ROOT_DISK_SIZE
         access_modes = cred.get("access_modes") or ["ReadWriteOnce"]
         if isinstance(access_modes, str):
@@ -1155,6 +1387,7 @@ class CephVMNodeOCP:
             cloudinit_secret_name=secret_name,
             precreated_volume_names=precreated,
             instancetype_name=instancetype,
+            secondary_network=secondary_network,
         )
         LOG.info(f"Creating VirtualMachine {vm_name} in namespace {self.namespace}")
 
@@ -1184,14 +1417,18 @@ class CephVMNodeOCP:
                 raise NodeError(
                     f"Failed to fetch VirtualMachine {vm_name} after create"
                 )
-            ip = self.ip_address
-            if ip:
-                self._cached_ip = ip
-                self._subnet = self._derive_subnet(ip)
+            if secondary_network:
+                self._ensure_guest_udn_ipv4(vm_name, secondary_network)
+                self._cached_ip = None
+                self._wait_until_udn_ip_known(vm_name)
+            ceph_ip = self.ip_address
+            ssh_ip = self.ssh_ip
+            if ceph_ip:
+                self._subnet = self._derive_subnet(ceph_ip)
             if precreated:
                 self._volumes = list(precreated)
             LOG.info(
-                f"Created VirtualMachine {vm_name} with IP {ip}"
+                f"Created VirtualMachine {vm_name} ssh={ssh_ip} ceph={ceph_ip}"
                 + (f" subnet {self._subnet}" if self._subnet else "")
             )
         except NodeError:
@@ -1250,8 +1487,13 @@ class CephVMNodeOCP:
             if getattr(exc, "status", None) != 404:
                 LOG.warning(f"delete cloud-init Secret {secret_name} failed: {exc}")
 
-    def delete(self) -> None:
-        """Delete the VirtualMachine (DataVolumes owned via templates are cleaned up)."""
+    def delete(self, keep_precreated_volumes: bool = False) -> None:
+        """Delete the VirtualMachine (DataVolumes owned via templates are cleaned up).
+
+        Args:
+            keep_precreated_volumes: If True, leave batch-created blank disks.
+                Used on create retry so the next attempt can reattach them.
+        """
         if not self.node:
             return
 
@@ -1286,8 +1528,17 @@ class CephVMNodeOCP:
                 raise NodeDeleteFailure(f"Failed to delete {vm_name}: {exc}") from exc
 
         self._wait_until_vm_deleted(vm_name)
-        cleanup_precreated_datavolumes(self._ocp_cred, datavolume_names)
-        self._precreated_volumes = []
+        if keep_precreated_volumes:
+            keep = set(self._precreated_volumes or [])
+            to_drop = [n for n in datavolume_names if n not in keep]
+            LOG.info(
+                f"Keeping {len(keep)} precreated DataVolume(s) for VM create retry"
+            )
+            if to_drop:
+                cleanup_precreated_datavolumes(self._ocp_cred, to_drop)
+        else:
+            cleanup_precreated_datavolumes(self._ocp_cred, datavolume_names)
+            self._precreated_volumes = []
         # Prefer secret name referenced by the VM; fall back to naming convention.
         secret_name = _cloudinit_secret_name(vm_name)
         try:
@@ -1329,8 +1580,8 @@ class CephVMNodeOCP:
         self.node = self._get_vm(vm_name)
 
     def get_private_ip(self) -> str:
-        """Return the private IP address of the VM (alias for ip_address)."""
-        return self.ip_address
+        """Return the SSH overlay IP (not the UDN Ceph address)."""
+        return self.ssh_ip
 
     # --- private helpers ---
 
@@ -1377,36 +1628,166 @@ class CephVMNodeOCP:
             LOG.warning(f"get VMI {vm_name} failed: {exc}")
             return None
 
-    def _get_vmi_ip(self) -> Optional[str]:
+    def _vmi_interfaces(self) -> List[dict]:
         if not self.node:
-            return None
+            return []
         vm_name = self.node.get("metadata", {}).get("name")
         if not vm_name:
-            return None
+            return []
         vmi = self._get_vmi(vm_name)
         if not vmi:
+            return []
+        return (vmi.get("status") or {}).get("interfaces") or []
+
+    def _get_vmi_ip(self) -> Optional[str]:
+        """SSH overlay IPv4 (create wait). Prefer ``ip_address`` for Ceph."""
+        return pick_vmi_ssh_ip(
+            self._vmi_interfaces(), udn=udn_network(self._ocp_cred)
+        )
+
+    def _virt_launcher_pod(self, vm_name: str) -> Optional[Any]:
+        try:
+            pods = self.core_api.list_namespaced_pod(
+                self.namespace,
+                label_selector=f"kubevirt.io/domain={vm_name}",
+            )
+        except Exception as exc:
+            LOG.warning(f"list virt-launcher for {vm_name} failed: {exc}")
             return None
-        interfaces = (vmi.get("status") or {}).get("interfaces") or []
-        ipv4s: List[str] = []
-        ipv6s: List[str] = []
-        for iface in interfaces:
-            candidates = []
-            if iface.get("ipAddress"):
-                candidates.append(iface["ipAddress"])
-            candidates.extend(iface.get("ipAddresses") or [])
-            for ip in candidates:
-                if not ip:
-                    continue
-                if ":" in ip:
-                    ipv6s.append(ip)
-                else:
-                    ipv4s.append(ip)
-        # Prefer IPv4: jump hosts / TenantEgress paths are often IPv4-only.
-        if ipv4s:
-            return ipv4s[0]
-        if ipv6s:
-            return ipv6s[0]
+        items = getattr(pods, "items", None) or []
+        return items[0] if items else None
+
+    def _ovn_secondary_cidr(self, vm_name: str, network_name: str) -> Optional[str]:
+        pod = self._virt_launcher_pod(vm_name)
+        if pod is None:
+            return None
+        annotations = pod.metadata.annotations or {}
+        return parse_ovn_secondary_cidr(
+            annotations.get("k8s.ovn.org/pod-networks") or "",
+            self.namespace,
+            network_name,
+        )
+
+    def _secondary_iface_mac(self, network_name: str) -> Optional[str]:
+        for iface in self._vmi_interfaces():
+            if iface.get("name") == network_name and iface.get("mac"):
+                return str(iface["mac"])
+        vmi_name = (self.node or {}).get("metadata", {}).get("name")
+        vmi = self._get_vmi(vmi_name) if vmi_name else None
+        if not vmi:
+            return None
+        for iface in (vmi.get("spec") or {}).get("domain", {}).get("devices", {}).get(
+            "interfaces"
+        ) or []:
+            if iface.get("name") == network_name and iface.get("macAddress"):
+                return str(iface["macAddress"])
         return None
+
+    def _ssh_root(self, script: str, timeout: int = 60) -> str:
+        """Run bash on the guest via overlay SSH. sshd may lag the pod IP."""
+        key = os.path.expanduser(str(self._ocp_cred.get("private_key_path") or "").strip())
+        if not key or not os.path.isfile(key):
+            raise NodeError(
+                "ocpvirt-credentials private_key_path is required to configure "
+                "the secondary UDN NIC in the guest"
+            )
+        ssh_ip = self.ssh_ip
+        if not ssh_ip:
+            raise NodeError("no overlay SSH IP for UDN guest configuration")
+        cmd = [
+            "ssh",
+            "-i",
+            key,
+            "-o",
+            "StrictHostKeyChecking=no",
+            "-o",
+            "UserKnownHostsFile=/dev/null",
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "ConnectTimeout=10",
+            "-o",
+            "LogLevel=ERROR",
+            f"root@{ssh_ip}",
+            "bash",
+            "-s",
+        ]
+        last_err = ""
+        deadline = IP_POLL_TIMEOUT
+        for w in WaitUntil(timeout=deadline, interval=10):
+            try:
+                proc = subprocess.run(
+                    cmd,
+                    input=script,
+                    text=True,
+                    capture_output=True,
+                    timeout=timeout,
+                    check=False,
+                )
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                last_err = str(exc)
+                continue
+            if proc.returncode == 0:
+                out = (proc.stdout or "").strip()
+                if out:
+                    LOG.info(out)
+                return out
+            last_err = (proc.stderr or proc.stdout or "").strip() or f"exit {proc.returncode}"
+            if ssh_guest_not_ready(last_err):
+                if w._attempt == 1 or w._attempt % 3 == 0:
+                    LOG.info(f"Waiting for guest SSH on {ssh_ip}: {last_err}")
+                continue
+            raise NodeError(
+                f"guest UDN nmcli on {ssh_ip} failed: {last_err}"
+            )
+        raise NodeError(
+            f"SSH to {ssh_ip} as root never succeeded for UDN nmcli: {last_err}"
+        )
+
+    def _ensure_guest_udn_ipv4(self, vm_name: str, network_name: str) -> None:
+        """Apply the OVN-assigned UDN CIDR inside the guest (l2bridge does not).
+
+        Do not trust VMI ``status.interfaces``: KubeVirt merges Multus CNI IPs
+        into that list even when the guest NIC has no IPv4.
+        """
+        cidr = self._ovn_secondary_cidr(vm_name, network_name)
+        mac = self._secondary_iface_mac(network_name)
+        if not cidr or not mac:
+            raise NodeError(
+                f"VirtualMachine {vm_name} secondary UDN {network_name} has no "
+                f"OVN CIDR or MAC (cidr={cidr} mac={mac})"
+            )
+        LOG.info(
+            f"Configuring guest UDN {network_name} {cidr} mac={mac} on {vm_name}"
+        )
+        self._ssh_root(guest_udn_nmcli_script(mac, cidr))
+        addr = str(ipaddress.ip_interface(cidr).ip)
+        check = self._ssh_root(
+            f"ip -4 -o addr show | grep -q 'inet {addr}/' && echo HAS_UDN_{addr}"
+        )
+        if f"HAS_UDN_{addr}" not in check:
+            raise NodeError(
+                f"VirtualMachine {vm_name} guest still missing {addr} after nmcli"
+            )
+
+    def _wait_until_udn_ip_known(
+        self, vm_name: str, timeout: int = IP_POLL_TIMEOUT
+    ) -> None:
+        """Fail closed: secondary UDN must show a guest IPv4 before create returns."""
+        for w in WaitUntil(timeout=timeout, interval=VM_POLL_INTERVAL):
+            self.node = self._get_vm(vm_name) or self.node
+            self._cached_ip = None
+            ip = pick_vmi_udn_ip(
+                self._vmi_interfaces(), udn=udn_network(self._ocp_cred)
+            )
+            if ip:
+                LOG.info(f"VirtualMachine {vm_name} guest UDN IPv4 {ip}")
+                self._cached_ip = ip
+                return
+        raise NodeError(
+            f"VirtualMachine {vm_name} guest never got a UDN IPv4 in {timeout}s "
+            "(l2bridge is L2-only; nmcli/cloud-init must configure the NIC)"
+        )
 
     def _wait_until_vm_ready(
         self, vm_name: str, timeout: int = VM_POLL_TIMEOUT
@@ -1428,7 +1809,12 @@ class CephVMNodeOCP:
             if ready or printable == "Running":
                 LOG.info(f"VirtualMachine {vm_name} is ready ({printable})")
                 return
-            if printable in ("ErrImagePull", "ImagePullBackOff"):
+            if printable in (
+                "ErrImagePull",
+                "ImagePullBackOff",
+                "ErrorPvcNotFound",
+                "ErrorDataVolumeNotFound",
+            ):
                 raise NodeError(f"VirtualMachine {vm_name} failed: {printable}")
             if printable == "ErrorUnschedulable" and w.expired:
                 raise NodeError(f"VirtualMachine {vm_name} failed: {printable}")

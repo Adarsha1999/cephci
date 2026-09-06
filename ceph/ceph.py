@@ -1578,6 +1578,8 @@ class CephNode(object):
             if (self.use_ipv6 and self.ipv6_address)
             else self.ipv4_address
         )
+        # SSH target; ocpvirt dual-NIC uses overlay here and UDN in ip_address.
+        self.ssh_ip = kw.get("ssh_ip") or self.ip_address
         self.subnet = (
             self.ipv6_subnet
             if (self.use_ipv6 and self.ipv6_subnet)
@@ -1619,7 +1621,7 @@ class CephNode(object):
             )
 
         self.root_connection = SSHConnectionManager(
-            self.ip_address,
+            self.ssh_ip,
             self.root_username,
             self.root_passwd,
             look_for_keys=self.look_for_key,
@@ -1627,7 +1629,7 @@ class CephNode(object):
             private_key_password=self.private_key_password,
         )
         self.connection = SSHConnectionManager(
-            self.ip_address,
+            self.ssh_ip,
             self.username,
             self.password,
             look_for_keys=self.look_for_key,
@@ -2157,9 +2159,29 @@ class CephNode(object):
 
     def reconnect(self):
         """Re-establish the connections."""
-        logger.info(f"Re-establishing the connection to {self.ip_address}.")
+        logger.info(f"Re-establishing the connection to {self.ssh_ip}.")
         self.root_connection.get_client()
         self.connection.get_client()
+
+    def _refresh_ocpvirt_bind_ip(self):
+        """On --reuse, take Ceph IP from live VMI UDN; keep SSH on overlay."""
+        vm_node = getattr(self, "vm_node", None)
+        if vm_node is None or getattr(vm_node, "node_type", None) != "ocpvirt":
+            return
+        try:
+            live_ssh = vm_node.ssh_ip
+            live_ceph = vm_node.ip_address
+        except Exception as exc:
+            logger.warning("ocpvirt IP refresh after reuse failed: %s", exc)
+            return
+        if live_ssh:
+            self.ssh_ip = live_ssh
+        if live_ceph:
+            self.ip_address = live_ceph
+            self.ipv4_address = live_ceph
+            if getattr(vm_node, "subnet", None):
+                self.subnet = vm_node.subnet
+                self.ipv4_subnet = vm_node.subnet
 
     def __getstate__(self):
         d = dict(self.__dict__)
@@ -2186,9 +2208,12 @@ class CephNode(object):
 
     def __setstate__(self, pickle_dict):
         self.__dict__.update(pickle_dict)
+        self._refresh_ocpvirt_bind_ip()
+        ssh_ip = getattr(self, "ssh_ip", None) or self.ip_address
+        self.ssh_ip = ssh_ip
         key_pw = getattr(self, "private_key_password", None)
         self.root_connection = SSHConnectionManager(
-            self.ip_address,
+            ssh_ip,
             "root",
             self.root_passwd,
             look_for_keys=self.look_for_key,
@@ -2196,7 +2221,7 @@ class CephNode(object):
             private_key_password=key_pw,
         )
         self.connection = SSHConnectionManager(
-            self.ip_address,
+            ssh_ip,
             self.username,
             self.password,
             look_for_keys=self.look_for_key,
